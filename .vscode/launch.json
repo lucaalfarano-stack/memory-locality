@@ -1,0 +1,69 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Run events_extractor",
+            "type": "debugpy",
+            "request": "launch",
+            //"module": "main",
+            "program": "${workspaceFolder}/main.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": [
+                "events",
+                "--input",
+                "./data/chunks/",
+                "--output",
+                "./data/events/"
+            ]
+        },
+        {
+            "name": "Run redis_cleanup",
+            "type": "debugpy",
+            "request": "launch",
+            //"module": "main",
+            "program": "${workspaceFolder}/main.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": [
+                "cleanup"
+            ]
+        },
+        {
+            "name": "Run redis_indexing",
+            "type": "debugpy",
+            "request": "launch",
+            //"module": "main",
+            "program": "${workspaceFolder}/main.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": [
+                "index",
+                "--chunks",
+                "./data/chunks/",
+                "--events",
+                "./data/events/"
+            ]
+        },
+        {
+            "name": "Run redis_search",
+            "type": "debugpy",
+            "request": "launch",
+            //"module": "main",
+            "program": "${workspaceFolder}/main.py",
+            "cwd": "${workspaceFolder}",
+            "console": "integratedTerminal",
+            "args": [
+                "search",
+                "--query",
+                "acqua abitacolo peugeot tappetini"
+            ]
+        },
+        {
+            "name": "Python Debugger: Python File",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${file}"
+        }
+    ]
+}
