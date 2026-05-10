@@ -6,6 +6,12 @@ This project extracts conversational memories from ChatGPT exports, indexes them
 
 The goal is not to replace LLM reasoning, but to improve contextual continuity across fragmented conversations while keeping the retrieval layer simple, deterministic, and inspectable.
 
+The system is designed around a simple principle:
+
+> embeddings perform recall,
+> retrieval preserves locality,
+> the final LLM performs reasoning.
+
 ---
 
 # Philosophy
@@ -71,6 +77,10 @@ Compact episodic context packaging
 Final LLM reasoning
 ```
 
+The retrieval layer intentionally remains conservative.
+
+Rather than aggressively rewriting queries or performing intermediate reasoning, the system focuses on preserving semantic locality and reducing cross-domain contamination between memories.
+
 ---
 
 # Future Directions
@@ -112,6 +122,31 @@ A few important findings emerged during development:
 Pure embedding similarity gives strong recall, but retrieval precision degrades as memory volume grows.
 
 Semantically adjacent but unrelated memories easily leak into prompts, especially across nearby conversational domains.
+
+Example:
+
+Query:
+
+```text
+acqua abitacolo auto tappetini
+```
+
+Naive semantic retrieval produced unrelated memories involving:
+- house condensation
+- mortgages
+- hospitalization related discussions
+- automation systems
+
+because embeddings alone collapsed semantically adjacent conversational contexts.
+
+After lightweight locality filtering:
+- flooded driver-side floor
+- cabin moisture
+- evaporator drainage
+- wet floor mats
+- water infiltration
+
+Retrieval quality improved significantly without introducing additional reasoning layers.
 
 ---
 
@@ -193,6 +228,8 @@ The project is currently best viewed as:
 
 > a practical local-first episodic memory layer for LLMs.
 
+The project should currently be considered an experimental systems prototype rather than a production-ready framework.
+
 ---
 
 # Observed Failure Modes
@@ -212,6 +249,10 @@ The implementation intentionally lives mostly in a single file:
 ```text
 main.py
 ```
+
+The single-file structure is currently intentional.
+
+The project is still evolving quickly, and keeping retrieval, indexing and prompt construction visible in one place makes experimentation substantially easier.
 
 This keeps:
 - refactoring simple
@@ -300,6 +341,19 @@ pip install -r requirements.txt
 
 # Usage
 
+Typical workflow:
+
+```text
+ChatGPT export
+    → chunk extraction
+    → event extraction
+    → embedding generation
+    → Redis indexing
+    → semantic retrieval
+    → memory packaging
+    → downstream LLM reasoning
+```
+
 ## 1. Export conversations
 
 ```bash
@@ -359,4 +413,6 @@ python main.py cleanup
 
 # License
 
-MIT
+MIT License.
+
+This repository is intentionally open and local-first.
