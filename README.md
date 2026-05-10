@@ -135,8 +135,8 @@ acqua abitacolo auto tappetini
 
 Naive semantic retrieval produced unrelated memories involving:
 - house condensation
-- mortgages
-- hospitalization related discussions
+- mortgage discussions
+- travel planning
 - automation systems
 
 because embeddings alone collapsed nearby conversational contexts.
@@ -241,6 +241,9 @@ The project should currently be considered an experimental systems prototype rat
 - reranking instability
 - query over-interpretation
 - memory flooding from long chats
+
+Examples shown in this repository are intentionally anonymized and simplified.
+The project originated from experiments on real conversational histories, but personal or sensitive data is excluded from public documentation.
 
 ---
 
