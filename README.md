@@ -1,4 +1,6 @@
-# Local-First Long-Term Memory for LLMs
+# memory-locality
+
+Local-first episodic memory retrieval for LLMs.
 
 A local-first long-term memory system for LLMs.
 
@@ -6,11 +8,11 @@ This project extracts conversational memories from ChatGPT exports, indexes them
 
 The goal is not to replace LLM reasoning, but to improve contextual continuity across fragmented conversations while keeping the retrieval layer simple, deterministic, and inspectable.
 
-The system is designed around a simple principle:
+Core principle:
 
-> embeddings perform recall,
-> retrieval preserves locality,
-> the final LLM performs reasoning.
+> embeddings perform recall
+> retrieval preserves locality
+> the final LLM performs reasoning
 
 ---
 
@@ -32,7 +34,7 @@ Instead, it focuses on:
 - simple inspectable code
 - leveraging modern LLM reasoning directly
 
-The memory system retrieves.
+The retrieval layer retrieves.
 The downstream LLM reasons.
 
 ---
@@ -60,21 +62,21 @@ Pipeline:
 ```text
 ChatGPT exports
     ↓
-Conversation chunks (.txt)
+chunk extraction
     ↓
-Structured event extraction (Ollama)
+event extraction (Ollama)
     ↓
-Chunk + event embeddings
+embeddings generation
     ↓
-Redis Stack vector indexing
+Redis Stack indexing
     ↓
-Semantic retrieval
-+ lightweight lexical anchoring
+semantic retrieval
++ locality filtering
 + memory grouping
     ↓
-Compact episodic context packaging
+episodic memory packaging
     ↓
-Final LLM reasoning
+downstream LLM reasoning
 ```
 
 The retrieval layer intentionally remains conservative.
@@ -137,7 +139,7 @@ Naive semantic retrieval produced unrelated memories involving:
 - hospitalization related discussions
 - automation systems
 
-because embeddings alone collapsed semantically adjacent conversational contexts.
+because embeddings alone collapsed nearby conversational contexts.
 
 After lightweight locality filtering:
 - flooded driver-side floor
@@ -146,7 +148,7 @@ After lightweight locality filtering:
 - wet floor mats
 - water infiltration
 
-Retrieval quality improved significantly without introducing additional reasoning layers.
+Retrieval quality improved significantly without adding extra reasoning layers.
 
 ---
 
@@ -197,7 +199,7 @@ The best results so far come from conservative retrieval:
 
 ## 5. Episodic locality matters
 
-One of the hardest problems is not memory recall itself, but preventing semantically nearby memories from contaminating each other.
+One of the hardest problems is not recall itself, but preventing nearby memories from contaminating each other.
 
 Long conversations naturally drift across domains:
 health, finance, cars, software, personal logistics, etc.
@@ -252,7 +254,7 @@ main.py
 
 The single-file structure is currently intentional.
 
-The project is still evolving quickly, and keeping retrieval, indexing and prompt construction visible in one place makes experimentation substantially easier.
+The project is still evolving quickly, and keeping retrieval, indexing and prompt construction visible in one place makes experimentation easier.
 
 This keeps:
 - refactoring simple
@@ -291,7 +293,7 @@ Desired retrieval behavior:
 into a grounded answer.
 
 The system should avoid premature reasoning.
-Its role is memory retrieval and contextual packaging.
+Its role is retrieval and contextual packaging.
 
 ---
 
@@ -415,4 +417,4 @@ python main.py cleanup
 
 MIT License.
 
-This repository is intentionally open and local-first.
+This repository is intentionally open, simple and local-first.
