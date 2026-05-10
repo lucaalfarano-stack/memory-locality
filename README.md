@@ -1,10 +1,10 @@
-# Local LLM Memory Retrieval
+# Local-First Long-Term Memory for LLMs
 
 A local-first long-term memory system for LLMs.
 
-This project extracts memories from ChatGPT conversations, indexes them into a vector database, retrieves relevant context semantically, and builds enhanced prompts for downstream LLMs.
+This project extracts conversational memories from ChatGPT exports, indexes them into Redis Stack using vector embeddings, retrieves semantically relevant episodic context, and builds compact memory packages for downstream LLMs.
 
-The goal is not to replace the reasoning capabilities of modern LLMs, but to provide them with better contextual continuity across conversations.
+The goal is not to replace LLM reasoning, but to improve contextual continuity across fragmented conversations while keeping the retrieval layer simple, deterministic, and inspectable.
 
 ---
 
@@ -19,14 +19,15 @@ This project intentionally avoids:
 
 Instead, it focuses on:
 
-- semantic memory retrieval
-- compact memory packaging
+- semantic recall
+- lightweight locality filtering
+- compact episodic memory packaging
 - local-first architecture
 - simple inspectable code
 - leveraging modern LLM reasoning directly
 
-The LLM should reason.
-The memory system should retrieve.
+The memory system retrieves.
+The downstream LLM reasons.
 
 ---
 
@@ -35,10 +36,12 @@ The memory system should retrieve.
 - Export ChatGPT conversations into text files
 - Extract structured events using Ollama
 - Index chunks and events into Redis Stack
-- Semantic vector retrieval using sentence-transformers
+- Semantic vector retrieval using sentence-transformers (all-MiniLM-L6-v2)
 - Mixed retrieval:
   - conversational chunks
   - structured event memories
+- Lightweight lexical anchoring to reduce topic drift
+- Memory grouping for stronger semantic locality
 - Prompt generation for downstream LLMs
 - Optional local answering through Ollama
 
@@ -49,34 +52,38 @@ The memory system should retrieve.
 Pipeline:
 
 ```text
-ChatGPT export
+ChatGPT exports
     ↓
 Conversation chunks (.txt)
     ↓
-Structured events extraction
+Structured event extraction (Ollama)
     ↓
-Redis vector indexing
+Chunk + event embeddings
+    ↓
+Redis Stack vector indexing
     ↓
 Semantic retrieval
++ lightweight lexical anchoring
++ memory grouping
     ↓
-Context packaging
+Compact episodic context packaging
     ↓
-Enhanced prompt for LLM
+Final LLM reasoning
 ```
 
 ---
 
 # Future Directions
 
-Potential future improvements:
+Current experimentation areas:
 
-- lightweight lexical filtering
-- better event compression
-- temporal memory grouping
-- conversation-level summarization
-- hybrid lexical + vector retrieval
-- graph visualization of memories/events
-- memory aging/pruning
+- retrieval precision tuning
+- memory deduplication
+- adaptive locality windows
+- better episodic grouping
+- lightweight hybrid lexical/vector scoring
+- memory aging and pruning
+- improved event extraction quality
 
 ---
 
@@ -90,7 +97,7 @@ This is not:
 - a symbolic expert system
 - a manually curated ontology
 
-The objective is narrower and more practical:
+The objective is intentionally narrower and more practical:
 
 > retrieve the right memories at the right time and let the LLM reason over them.
 
@@ -100,11 +107,11 @@ The objective is narrower and more practical:
 
 A few important findings emerged during development:
 
-## 1. Vector search alone is not enough
+## 1. Semantic recall alone is not enough
 
-Pure embedding similarity gives decent recall, but retrieval precision degrades quickly as memory volume grows.
+Pure embedding similarity gives strong recall, but retrieval precision degrades as memory volume grows.
 
-Semantically adjacent but irrelevant memories often leak into prompts.
+Semantically adjacent but unrelated memories easily leak into prompts, especially across nearby conversational domains.
 
 ---
 
@@ -123,7 +130,7 @@ Modern LLMs already perform much of this reasoning internally.
 
 ---
 
-## 3. Memory packaging matters more than memory modeling
+## 3. Memory packaging matters more than symbolic modeling
 
 The biggest gains came from:
 - cleaner memory snippets
@@ -135,14 +142,32 @@ rather than deeper symbolic structure.
 
 ---
 
-## 4. Reranking is fragile
+## 4. Overly interpretative retrieval is fragile
 
-LLM reranking can improve precision, but:
-- small local models are unstable rerankers
-- aggressive filtering easily removes relevant memories
-- semantic drift can become worse instead of better
+Experiments with:
+- query rewriting
+- aggressive reranking
+- semantic expansion
+- intermediate reasoning layers
 
-This remains an active experimentation area.
+often degraded retrieval stability instead of improving it.
+
+The best results so far come from conservative retrieval:
+- semantic recall
+- lightweight locality filtering
+- compact memory packaging
+- reasoning delegated entirely to the final LLM
+
+---
+
+## 5. Episodic locality matters
+
+One of the hardest problems is not memory recall itself, but preventing semantically nearby memories from contaminating each other.
+
+Long conversations naturally drift across domains:
+health, finance, cars, software, personal logistics, etc.
+
+Memory grouping and lightweight lexical anchoring currently provide a simpler and more stable solution than deeper symbolic structures.
 
 ---
 
@@ -166,13 +191,23 @@ Current maturity level:
 
 The project is currently best viewed as:
 
-> a practical local memory augmentation layer for LLMs.
+> a practical local-first episodic memory layer for LLMs.
+
+---
+
+# Observed Failure Modes
+
+- semantic topic contamination
+- conversational drift across domains
+- reranking instability
+- query over-interpretation
+- memory flooding from long chats
 
 ---
 
 # Repository Structure
 
-Current implementation intentionally lives mostly in a single file:
+The implementation intentionally lives mostly in a single file:
 
 ```text
 main.py
@@ -184,7 +219,7 @@ This keeps:
 - debugging transparent
 - AI-assisted editing manageable
 
-Future modularization may split:
+Future modularization may separate:
 - indexing
 - retrieval
 - prompt building
@@ -203,7 +238,7 @@ User query:
 "che problemi ha la mia Peugeot 307?"
 ```
 
-Desired behavior:
+Desired retrieval behavior:
 
 - recover relevant memories from past chats
 - avoid unrelated domains
@@ -214,8 +249,8 @@ Desired behavior:
 
 into a grounded answer.
 
-The system should not attempt to fully reason beforehand.
-Its role is retrieval and packaging.
+The system should avoid premature reasoning.
+Its role is memory retrieval and contextual packaging.
 
 ---
 
@@ -321,3 +356,7 @@ python main.py cleanup
 ```
 
 ---
+
+# License
+
+MIT

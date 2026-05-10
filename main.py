@@ -1,16 +1,26 @@
 """
-CLI entry point for the events-extractor project.
+Local-first long-term memory system for LLMs.
 
-This tool provides an end-to-end pipeline to:
-1. Export conversations from ChatGPT export format into text chunks
-2. Extract structured events from those conversations using a local LLM (Ollama)
-3. Index both chunks and events into a Redis vector database
-4. Perform semantic search across conversations (mixed retrieval: chunks + events)
+Goal:
+Preserve conversational continuity across fragmented chats
+without autonomous agents, symbolic knowledge graphs,
+or aggressive query rewriting.
+
+Core idea:
+semantic recall + lightweight locality filtering +
+compact episodic memory packaging.
+
+Pipeline:
+1. Export ChatGPT conversations into text conversations
+2. Extract structured conversational memories via Ollama
+3. Index chunks and events into Redis Stack
+4. Perform semantic retrieval with lightweight lexical anchoring
+5. Build compact memory context for downstream LLMs
 
 Commands:
 
 - export:
-    Convert a conversations.json file into one .txt file per conversation.
+    Convert a conversations.json export into one .txt file per conversation.
 
 - events:
     Generate structured event JSON files from .txt conversations using Ollama.
@@ -19,41 +29,16 @@ Commands:
     Index chunks and events into Redis (vector + metadata).
 
 - search:
-    Perform semantic search over indexed data and return grouped results by conversation.
+    Perform semantic memory retrieval across indexed conversations.
 
 - cleanup:
-    Drop Redis index and delete all stored documents (mem:*).
-
-Examples:
-
-# 1. Export conversations → chunks
-python main.py export \
-  --input ./data/raw/conversations.json \
-  --output ./data/chunks
-
-# 2. Generate events from chunks
-python main.py events \
-  --input ./data/chunks \
-  --output ./data/events
-
-# 3. Index chunks + events into Redis
-python main.py index \
-  --chunks ./data/chunks \
-  --events ./data/events
-
-# 4. Search across indexed data
-python main.py search \
-  --query "jenkins logs error count"
-
-# 5. Cleanup Redis index and stored data
-python main.py cleanup
+    Drop Redis index and delete all stored documents.
 
 Notes:
-- Paths are resolved relative to the current working directory.
-- Requires a running Redis instance with RediSearch (e.g. redis-stack).
-- Requires Ollama running locally (default: http://localhost:11434).
-- No OpenAI API is required.
-- Indexing is append-only unless explicitly cleaned.
+- Retrieval intentionally stays conservative and deterministic.
+- The retrieval layer does not perform reasoning.
+- Reasoning is delegated to the final LLM.
+- Redis Stack is used as a lightweight memory substrate.
 """
 
 import json
@@ -62,12 +47,76 @@ from pathlib import Path
 
 import argparse
 import time
+import re
+from collections import defaultdict
 
-# --- Added imports for index layer ---
+import nltk
+from nltk.corpus import stopwords
+
 import numpy as np
 import redis
 from sentence_transformers import SentenceTransformer
 from redis.commands.search.query import Query
+
+# Multilingual stopwords used for lightweight lexical anchoring.
+# Falls back gracefully if corpus is missing.
+try:
+    nltk.data.find("corpora/stopwords")
+except LookupError:
+    nltk.download("stopwords", quiet=True)
+
+STOPWORDS = set(stopwords.words("italian")) | set(stopwords.words("english"))
+
+GENERIC_PATTERNS = [
+    # italian
+    "ti spiego",
+    "fammi sapere",
+    "in generale",
+    "dipende",
+    "puo essere",
+    "potrebbe essere",
+    "e importante",
+    "bisogna",
+    "vediamo",
+    # english
+    "let me explain",
+    "let me know",
+    "in general",
+    "it depends",
+    "could be",
+    "might be",
+    "it is important",
+    "you should",
+    "we should",
+]
+
+# Long conversations often drift across unrelated topics.
+# Memory groups preserve stronger semantic locality during retrieval.
+
+MEMORY_GROUP_SIZE = 12
+
+
+def tokenize(text: str):
+    words = re.findall(r"\w+", text.lower())
+    unique_words = set()
+
+    for word in words:
+        if len(word) >= 3 and word not in STOPWORDS and word not in unique_words:
+            unique_words.add(word)
+
+    return unique_words
+
+
+def lexical_overlap_score(query: str, text: str):
+    q = tokenize(query)
+    t = tokenize(text)
+
+    if not q or not t:
+        return 0.0
+
+    overlap = q.intersection(t)
+
+    return len(overlap) / len(q)
 
 
 class ConversationsExporter:
@@ -211,6 +260,8 @@ def create_index():
         "TEXT",
         "chat_id",
         "TAG",
+        "memory_group",
+        "TAG",
         "doc_type",
         "TAG",
         "entity",
@@ -264,7 +315,21 @@ def index_chunks(chunks_dir: Path = CHUNKS_DIR):
 
         for i, chunk in enumerate(parts):
             logger.info("Indexing chunk %s #%d", chat_id, i)
-            if not chunk.strip():
+            group_id = i // MEMORY_GROUP_SIZE
+            memory_group = f"{chat_id}:g{group_id}"
+
+            chunk = chunk.strip()
+
+            if not chunk:
+                continue
+
+            # suppress extremely small / generic conversational fragments
+            if len(chunk.split()) < 8:
+                continue
+
+            normalized = chunk.lower()
+
+            if any(pattern in normalized for pattern in GENERIC_PATTERNS):
                 continue
 
             key = f"{PREFIX}chunk:{chat_id}:{i}"
@@ -274,6 +339,7 @@ def index_chunks(chunks_dir: Path = CHUNKS_DIR):
                 {
                     "content": chunk,
                     "chat_id": chat_id,
+                    "memory_group": memory_group,
                     "doc_type": "chunk",
                     "entity": "",
                     "embedding": embed(chunk),
@@ -301,6 +367,8 @@ def index_events(events_dir: Path = EVENTS_DIR):
             if not isinstance(ev, dict):
                 continue
 
+            group_id = i // MEMORY_GROUP_SIZE
+            memory_group = f"{chat_id}:g{group_id}"
             entity = ev.get("entity", "") or ""
             ev_type = ev.get("type", "") or ""
             symptoms = ev.get("symptoms", []) or []
@@ -334,6 +402,7 @@ def index_events(events_dir: Path = EVENTS_DIR):
                 {
                     "content": text,
                     "chat_id": chat_id,
+                    "memory_group": memory_group,
                     "doc_type": "event",
                     "entity": entity,
                     "embedding": embed(text),
@@ -350,32 +419,75 @@ def search(query: str, k=15):
     k = 15
 
     def run_query(filter_query):
+        def _decode(x):
+            if isinstance(x, bytes):
+                return x.decode("utf-8")
+            return x
+
         q = (
             Query(f"{filter_query}=>[KNN {k} @embedding $vec AS score]")
-            .return_fields("content", "chat_id", "doc_type", "entity", "score")
+            .return_fields(
+                "content",
+                "chat_id",
+                "memory_group",
+                "doc_type",
+                "entity",
+                "score",
+            )
             .sort_by("score")
             .dialect(2)
         )
         res = redis_instance.ft(INDEX_NAME).search(q, query_params={"vec": q_vec})
-        return getattr(res, "docs", [])
+        docs = getattr(res, "docs", [])
+        filtered = []
+
+        for d in docs:
+            content = _decode(d.content)
+            overlap = lexical_overlap_score(query, content)
+
+            doc_type = _decode(d.doc_type)
+            score = float(d.score)
+
+            if doc_type == "event":
+                # Events are compressed semantic memories.
+                # Retrieval stays intentionally permissive because
+                # event embeddings are denser and noisier than chunks.
+                if score < 0.78:
+                    filtered.append(d)
+
+            else:
+                # Chunks preserve nuance and reasoning traces,
+                # but require stronger filtering to avoid topic drift.
+                if overlap >= 0.20 or score < 0.55:
+                    filtered.append(d)
+
+        return filtered
 
     chunk_docs = run_query("@doc_type:{chunk}")
     event_docs = run_query("@doc_type:{event}")
 
     docs = chunk_docs + event_docs
 
+    grouped = {}
+
     def _decode(x):
         if isinstance(x, bytes):
             return x.decode("utf-8")
         return x
 
-    grouped = {}
-
     for doc in docs:
         chat_id = _decode(doc.chat_id)
+        memory_group = _decode(doc.memory_group)
 
-        if chat_id not in grouped:
-            grouped[chat_id] = {"chat_id": chat_id, "chunks": [], "events": []}
+        group_key = memory_group or chat_id
+
+        if group_key not in grouped:
+            grouped[group_key] = {
+                "chat_id": chat_id,
+                "memory_group": group_key,
+                "chunks": [],
+                "events": [],
+            }
 
         item = {
             "content": _decode(doc.content),
@@ -386,20 +498,28 @@ def search(query: str, k=15):
         doc_type = _decode(doc.doc_type)
 
         if doc_type == "event":
-            grouped[chat_id]["events"].append(item)
+            grouped[group_key]["events"].append(item)
         else:
-            grouped[chat_id]["chunks"].append(item)
+            grouped[group_key]["chunks"].append(item)
 
     for chat in grouped.values():
         event_scores = [x["score"] for x in chat["events"]]
         chunk_scores = [x["score"] for x in chat["chunks"]]
 
-        best_event = min(event_scores) if event_scores else 999
-        best_chunk = min(chunk_scores) if chunk_scores else 999
+        event_component = min(event_scores) if event_scores else 999
 
-        # events are higher signal than chunks
-        # lower Redis cosine distance is better
-        chat["score"] = min(best_event * 0.8, best_chunk)
+        chunk_component = (
+            sum(sorted(chunk_scores)[:3]) / min(len(chunk_scores), 3)
+            if chunk_scores
+            else 999
+        )
+
+        # Events benefit from best-match scoring because they are sparse.
+        # Chunks instead benefit from averaging because they are noisier.
+        chat["score"] = min(
+            event_component * 0.75,
+            chunk_component,
+        )
 
     # lower score is better
     results = sorted(grouped.values(), key=lambda x: x["score"])
@@ -422,13 +542,15 @@ def build_context(results):
     if not results:
         return ""
 
-    # --- Select only chats within a relevance window
+    # Select only semantically local memory groups.
     MAX_CHATS = 5
-    SCORE_WINDOW = 0.12
+    # Wider windows preserve nearby episodic memories.
+    SCORE_WINDOW = 0.35
 
     best_score = results[0].get("score", 999)
 
     selected_chats = []
+    selected_memory_groups = set()
 
     for chat in results:
         if len(selected_chats) >= MAX_CHATS:
@@ -436,8 +558,14 @@ def build_context(results):
 
         score = chat.get("score", 999)
 
-        # lower score is better (cosine distance)
+        # Lower cosine distance is better.
         if abs(score - best_score) <= SCORE_WINDOW:
+            memory_group = chat.get("memory_group")
+
+            if memory_group in selected_memory_groups:
+                continue
+
+            selected_memory_groups.add(memory_group)
             selected_chats.append(chat)
 
     # --- Merge and globally rerank retrieved memories
@@ -445,7 +573,10 @@ def build_context(results):
     all_chunks = []
 
     for chat in selected_chats:
+        # Preserve retrieved episodic memories.
         all_events.extend(chat["events"])
+
+        # Chunks provide supporting conversational context.
         all_chunks.extend(chat["chunks"])
 
     # lower score is better
