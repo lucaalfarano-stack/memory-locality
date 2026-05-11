@@ -79,9 +79,39 @@ episodic memory packaging
 downstream LLM reasoning
 ```
 
+
 The retrieval layer intentionally remains conservative.
 
 Rather than aggressively rewriting queries or performing intermediate reasoning, the system focuses on preserving semantic locality and reducing cross-domain contamination between memories.
+
+---
+
+# v0.1 Architectural Baseline
+
+Version v0.1 represents the first stable baseline of the current retrieval architecture.
+
+The system currently relies on:
+
+- semantic vector recall
+- lightweight lexical anchoring
+- episodic grouping
+- conservative retrieval heuristics
+- locality-preserving context packaging
+
+The project intentionally prioritizes retrieval stability and inspectability over aggressive semantic expansion.
+
+Current experimentation suggests that conversational memory retrieval behaves differently from traditional document RAG systems.
+
+Conversation histories are strongly:
+
+- temporal
+- locality-sensitive
+- episodic
+- adjacency-dependent
+
+This makes overly interpretative retrieval pipelines fragile.
+
+The current architecture should therefore be viewed as a conservative retrieval baseline rather than a finalized memory architecture.
 
 ---
 
@@ -92,8 +122,10 @@ Current experimentation areas:
 - retrieval precision tuning
 - memory deduplication
 - adaptive locality windows
-- better episodic grouping
-- lightweight hybrid lexical/vector scoring
+- hybrid lexical/vector retrieval
+- ordered conversational memory structures
+- locality-preserving retrieval architectures
+- lightweight grep-oriented retrieval
 - memory aging and pruning
 - improved event extraction quality
 
@@ -234,6 +266,7 @@ The project should currently be considered an experimental systems prototype rat
 
 ---
 
+
 # Observed Failure Modes
 
 - semantic topic contamination
@@ -241,6 +274,41 @@ The project should currently be considered an experimental systems prototype rat
 - reranking instability
 - query over-interpretation
 - memory flooding from long chats
+
+---
+
+# Current Architectural Limitations
+
+Several limitations emerged during experimentation with conversational memory retrieval.
+
+## Semantic retrieval can become overly interpretative
+
+Embedding similarity often retrieves semantically adjacent but contextually unrelated memories.
+
+As conversational history grows, nearby domains begin contaminating each other:
+- health
+- finance
+- software
+- personal logistics
+- vehicles
+- household issues
+
+This produces retrieval instability even when embedding similarity scores remain high.
+
+## Conversational continuity is difficult to reconstruct after retrieval
+
+The current pipeline retrieves fragmented chunks first and only later attempts to rebuild episodic continuity.
+
+This requires additional heuristics:
+- memory grouping
+- locality filtering
+- lexical anchoring
+- score windows
+- reranking constraints
+
+These mechanisms improve results, but they also suggest that preserving conversational locality directly at the storage layer may ultimately be a simpler and more robust approach.
+
+Future versions may therefore explore ordered conversational memory structures and hybrid lexical/semantic retrieval strategies.
 
 Examples shown in this repository are intentionally anonymized and simplified.
 The project originated from experiments on real conversational histories, but personal or sensitive data is excluded from public documentation.
