@@ -1,44 +1,15 @@
 """
-Local-first long-term memory system for LLMs.
+Local-first conversational memory system for LLMs.
 
-Goal:
-Preserve conversational continuity across fragmented chats
-without autonomous agents, symbolic knowledge graphs,
-or aggressive query rewriting.
-
-Core idea:
-semantic recall + lightweight locality filtering +
-compact episodic memory packaging.
+Modes:
+- vector-locality: semantic retrieval + locality filtering
+- ordered-memory: ordered conversational retrieval using Redis Arrays semantics
 
 Pipeline:
-1. Export ChatGPT conversations into text conversations
-2. Extract structured conversational memories via Ollama
-3. Index chunks and events into Redis Stack
-4. Perform semantic retrieval with lightweight lexical anchoring
-5. Build compact memory context for downstream LLMs
-
-Commands:
-
-- export:
-    Convert a conversations.json export into one .txt file per conversation.
-
-- events:
-    Generate structured event JSON files from .txt conversations using Ollama.
-
-- index:
-    Index chunks and events into Redis (vector + metadata).
-
-- search:
-    Perform semantic memory retrieval across indexed conversations.
-
-- cleanup:
-    Drop Redis index and delete all stored documents.
-
-Notes:
-- Retrieval intentionally stays conservative and deterministic.
-- The retrieval layer does not perform reasoning.
-- Reasoning is delegated to the final LLM.
-- Redis Stack is used as a lightweight memory substrate.
+1. Export ChatGPT conversations
+2. Extract conversational events
+3. Index memories into Redis
+4. Retrieve local conversational context
 """
 
 import json
@@ -48,7 +19,8 @@ from pathlib import Path
 import argparse
 import time
 import re
-from collections import defaultdict
+
+from typing import List
 
 import nltk
 from nltk.corpus import stopwords
@@ -90,10 +62,69 @@ GENERIC_PATTERNS = [
     "we should",
 ]
 
+NOISY_ENTITY_PATTERNS = {
+    "_",
+    "user",
+    "assistant",
+    "chatgpt",
+    "conversation",
+    "entities",
+    "message",
+    "messages",
+    "text",
+    "information",
+}
+
 # Long conversations often drift across unrelated topics.
 # Memory groups preserve stronger semantic locality during retrieval.
 
 MEMORY_GROUP_SIZE = 12
+
+ORDERED_PREFIX = "arr:chat:"
+EVENT_INDEX_PREFIX = "arr:event:"
+ORDERED_WINDOW = 3
+
+
+def parse_message_line(line: str):
+    if "|" not in line or ":" not in line:
+        return None
+
+    try:
+        timestamp_part, rest = line.split("|", 1)
+        role_part, content = rest.split(":", 1)
+
+        return {
+            "timestamp": timestamp_part.strip(),
+            "role": role_part.strip(),
+            "content": content.strip(),
+        }
+    except Exception:
+        return None
+
+
+def ordered_key(chat_id: str):
+    return f"{ORDERED_PREFIX}{chat_id}"
+
+
+def ordered_event_key(entity):
+    if isinstance(entity, list):
+        entity = " ".join(str(x) for x in entity if x is not None)
+
+    entity = str(entity or "")
+
+    normalized = re.sub(r"[^a-zA-Z0-9:_-]", "_", entity.lower())
+    return f"{EVENT_INDEX_PREFIX}{normalized}"
+
+
+def is_noisy_entity(entity: str):
+    entity = str(entity or "").strip().lower()
+    if not entity:
+        return True
+    if entity in NOISY_ENTITY_PATTERNS:
+        return True
+    if len(entity) <= 2:
+        return True
+    return False
 
 
 def tokenize(text: str):
@@ -193,6 +224,10 @@ logger = logging.getLogger(__name__)
 
 REDIS_HOST = "localhost"
 REDIS_PORT = 6379
+
+# Arrays/ARGREP support currently requires Redis unstable branch.
+# Current implementation emulates ordered memory semantics using Lists.
+REDIS_UNSTABLE_IMAGE = "redis-unstable-arrays"
 
 INDEX_NAME = "idx:memory"
 PREFIX = "mem:"
@@ -305,6 +340,282 @@ def store_doc(key: str, fields: dict):
     redis_instance.hset(key, mapping=cleaned)
 
 
+# ---------- Ordered Memory Functions ----------
+
+
+def store_ordered_conversation(chat_id: str, messages: List[dict]):
+    key = ordered_key(chat_id)
+
+    redis_instance.delete(key)
+
+    pipe = redis_instance.pipeline()
+
+    for idx, msg in enumerate(messages):
+        payload = json.dumps(
+            {
+                "index": idx,
+                "timestamp": msg["timestamp"],
+                "role": msg["role"],
+                "content": msg["content"],
+            },
+            ensure_ascii=False,
+        )
+
+        pipe.rpush(key, payload)
+
+    pipe.execute()
+
+
+def store_ordered_event(entity: str, chat_id: str, message_index: int):
+    if not entity:
+        return
+
+    key = ordered_event_key(entity)
+
+    redis_instance.rpush(
+        key,
+        json.dumps(
+            {
+                "chat_id": chat_id,
+                "message_index": message_index,
+            }
+        ),
+    )
+
+
+def index_ordered_conversations(chunks_dir: Path = CHUNKS_DIR):
+    for file in chunks_dir.glob("*.txt"):
+        chat_id = file.stem
+        text = file.read_text(encoding="utf-8")
+
+        messages = []
+
+        for raw in text.split("\n\n"):
+            parsed = parse_message_line(raw.strip())
+
+            if not parsed:
+                continue
+
+            messages.append(parsed)
+
+        if not messages:
+            continue
+
+        store_ordered_conversation(chat_id, messages)
+
+        logger.info(
+            "Indexed ordered conversation %s (%d messages)", chat_id, len(messages)
+        )
+
+
+def index_ordered_events(events_dir: Path = EVENTS_DIR):
+    for file in events_dir.glob("*.json"):
+        chat_id = file.stem
+        raw = json.loads(file.read_text(encoding="utf-8"))
+
+        if isinstance(raw, dict) and "events" in raw:
+            data = raw["events"]
+        elif isinstance(raw, list):
+            data = raw
+        else:
+            continue
+
+        for ev in data:
+            if not isinstance(ev, dict):
+                continue
+
+            entity = ev.get("entity") or ""
+            if is_noisy_entity(entity):
+                continue
+            timestamps = ev.get("timestamp") or []
+
+            if isinstance(timestamps, str):
+                timestamps = [timestamps]
+
+            for ts in timestamps:
+                try:
+                    ts = str(ts).strip()
+                except Exception:
+                    continue
+
+                key = ordered_key(chat_id)
+                messages = redis_instance.lrange(key, 0, -1)
+
+                for idx, raw_msg in enumerate(messages):
+                    try:
+                        msg = json.loads(raw_msg)
+                    except Exception:
+                        continue
+
+                    if str(msg.get("timestamp", "")).startswith(ts):
+                        store_ordered_event(entity, chat_id, idx)
+                        break
+
+        logger.info("Indexed ordered events for %s", chat_id)
+
+
+def ordered_expand(chat_id: str, index: int, window: int = ORDERED_WINDOW):
+    key = ordered_key(chat_id)
+
+    start = max(0, index - window)
+    end = index + window
+
+    items = redis_instance.lrange(key, start, end)
+
+    parsed = []
+
+    for item in items:
+        try:
+            parsed.append(json.loads(item))
+        except Exception:
+            continue
+
+    return parsed
+
+
+def ordered_argrep(query: str, max_results: int = 5):
+    ordered_hits = []
+    seen = set()
+
+    query_terms = tokenize(query)
+
+    for key in redis_instance.scan_iter(f"{ORDERED_PREFIX}*"):
+        chat_id = key.decode().replace(ORDERED_PREFIX, "")
+
+        messages = redis_instance.lrange(key, 0, -1)
+
+        for idx, raw_msg in enumerate(messages):
+            try:
+                msg = json.loads(raw_msg)
+            except Exception:
+                continue
+
+            content = str(msg.get("content", ""))
+            lowered = content.lower()
+
+            if not any(term in lowered for term in query_terms):
+                continue
+
+            dedup = f"{chat_id}:{idx}"
+
+            if dedup in seen:
+                continue
+
+            seen.add(dedup)
+
+            ordered_hits.append(
+                {
+                    "chat_id": chat_id,
+                    "message_index": idx,
+                    "score": sum(1 for t in query_terms if t in lowered),
+                    "anchor_message": msg,
+                    "context": ordered_expand(chat_id, idx),
+                }
+            )
+
+    ordered_hits = sorted(
+        ordered_hits,
+        key=lambda x: x["score"],
+        reverse=True,
+    )
+
+    return ordered_hits[:max_results]
+
+
+def ordered_search(query: str, max_results: int = 5):
+    ordered_hits = []
+    seen = set()
+
+    query_terms = tokenize(query)
+
+    for key in redis_instance.scan_iter(f"{ORDERED_PREFIX}*"):
+        chat_id = key.decode().replace(ORDERED_PREFIX, "")
+
+        messages = redis_instance.lrange(key, 0, -1)
+
+        for idx, raw_msg in enumerate(messages):
+            try:
+                msg = json.loads(raw_msg)
+            except Exception:
+                continue
+
+            content = str(msg.get("content", ""))
+            lowered = content.lower()
+
+            lexical_hits = sum(1 for term in query_terms if term in lowered)
+
+            if lexical_hits == 0:
+                continue
+
+            dedup = f"{chat_id}:{idx}"
+
+            if dedup in seen:
+                continue
+
+            seen.add(dedup)
+
+            context = ordered_expand(chat_id, idx)
+
+            ordered_hits.append(
+                {
+                    "chat_id": chat_id,
+                    "message_index": idx,
+                    "score": lexical_hits,
+                    "anchor_message": msg,
+                    "context": context,
+                }
+            )
+
+    ordered_hits = sorted(
+        ordered_hits,
+        key=lambda x: x["score"],
+        reverse=True,
+    )
+
+    return ordered_hits[:max_results]
+
+
+def build_ordered_context(results):
+    blocks = []
+
+    for hit in results:
+        lines = []
+
+        anchor = hit.get("anchor_message") or {}
+        anchor_role = anchor.get("role", "UNKNOWN")
+        anchor_content = anchor.get("content", "").strip()
+
+        if anchor_content:
+            lines.append("ANCHOR MESSAGE:")
+            lines.append(f"{anchor_role}: {anchor_content}")
+            lines.append("")
+            lines.append("LOCAL CONTEXT:")
+
+        for msg in hit["context"]:
+            role = msg.get("role", "UNKNOWN")
+            content = msg.get("content", "").strip()
+
+            if not content:
+                continue
+
+            if content == anchor_content:
+                continue
+
+            lines.append(f"{role}: {content}")
+
+        if not lines:
+            continue
+
+        block = (
+            f"CHAT: {hit['chat_id']}\n"
+            f"MATCH SCORE: {hit['score']}\n" + "\n".join(lines)
+        )
+
+        blocks.append(block)
+
+    return "\n\n---\n\n".join(blocks)
+
+
 def index_chunks(chunks_dir: Path = CHUNKS_DIR):
     """Index chunk text files."""
     for file in chunks_dir.glob("*.txt"):
@@ -323,7 +634,6 @@ def index_chunks(chunks_dir: Path = CHUNKS_DIR):
             if not chunk:
                 continue
 
-            # suppress extremely small / generic conversational fragments
             if len(chunk.split()) < 8:
                 continue
 
@@ -412,11 +722,9 @@ def index_events(events_dir: Path = EVENTS_DIR):
         logger.info("Indexed events for %s", chat_id)
 
 
-def search(query: str, k=15):
+def search(query: str, k: int = 15):
     """Search chunks + events grouped by chat_id."""
     q_vec = embed(query)
-
-    k = 15
 
     def run_query(filter_query):
         def _decode(x):
@@ -456,8 +764,6 @@ def search(query: str, k=15):
                     filtered.append(d)
 
             else:
-                # Chunks preserve nuance and reasoning traces,
-                # but require stronger filtering to avoid topic drift.
                 if overlap >= 0.20 or score < 0.55:
                     filtered.append(d)
 
@@ -670,16 +976,15 @@ USER QUESTION:
 ---
 
 INSTRUCTIONS:
-- EVENTS are higher-confidence memories
-- CONTEXT messages are supporting evidence only
-- Ignore memories that appear unrelated to the question
-- Do NOT connect unrelated memories together
-- Do NOT invent causal relationships unless explicitly supported
-- If memories are insufficient, rely on general knowledge
-- Clearly distinguish:
-  • what is known from memory
-  • what comes from general knowledge
-- Be concise, practical, and grounded
+- Retrieved messages preserve original conversational locality
+- ANCHOR MESSAGE is the primary retrieval hit
+- LOCAL CONTEXT contains adjacent conversational turns
+- Prioritize concrete facts explicitly stated in the ANCHOR MESSAGE
+- Use LOCAL CONTEXT only to reconstruct surrounding meaning
+- Do not average or merge unrelated medical facts
+- If a number, date, or diagnosis is explicitly present, prefer exact retrieval over summarization
+- If multiple conflicting memories exist, say so explicitly
+- Answer the user's actual retrieval question directly and briefly
 """
 
 
@@ -1095,9 +1400,19 @@ def main() -> None:
     index_parser = subparsers.add_parser("index")
     index_parser.add_argument("--chunks", required=True)
     index_parser.add_argument("--events", required=True)
+    index_parser.add_argument(
+        "--mode",
+        choices=["vector", "ordered", "hybrid"],
+        default="vector",
+    )
 
     search_parser = subparsers.add_parser("search")
     search_parser.add_argument("--query", required=True)
+    search_parser.add_argument(
+        "--mode",
+        choices=["vector", "ordered", "argrep"],
+        default="vector",
+    )
     search_parser.add_argument(
         "--ollama",
         action="store_true",
@@ -1161,14 +1476,28 @@ def main() -> None:
         creator.process_all()
 
     elif args.command == "index":
-        create_index()
-        index_chunks(Path(args.chunks))
-        index_events(Path(args.events))
+        if args.mode in ["vector", "hybrid"]:
+            create_index()
+            index_chunks(Path(args.chunks))
+            index_events(Path(args.events))
+
+        if args.mode in ["ordered", "hybrid"]:
+            index_ordered_conversations(Path(args.chunks))
+            index_ordered_events(Path(args.events))
 
     elif args.command == "search":
-        results = search(args.query)
+        if args.mode == "ordered":
+            results = ordered_search(args.query)
+            context = build_ordered_context(results)
 
-        context = build_context(results)
+        elif args.mode == "argrep":
+            results = ordered_argrep(args.query)
+            context = build_ordered_context(results)
+
+        else:
+            results = search(args.query)
+            context = build_context(results)
+
         prompt = build_prompt(args.query, context)
 
         print("\n===== CONTEXT =====\n")
