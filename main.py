@@ -62,19 +62,6 @@ GENERIC_PATTERNS = [
     "we should",
 ]
 
-NOISY_ENTITY_PATTERNS = {
-    "_",
-    "user",
-    "assistant",
-    "chatgpt",
-    "conversation",
-    "entities",
-    "message",
-    "messages",
-    "text",
-    "information",
-}
-
 # Long conversations often drift across unrelated topics.
 # Memory groups preserve stronger semantic locality during retrieval.
 
@@ -106,25 +93,9 @@ def ordered_key(chat_id: str):
     return f"{ORDERED_PREFIX}{chat_id}"
 
 
-def ordered_event_key(entity):
-    if isinstance(entity, list):
-        entity = " ".join(str(x) for x in entity if x is not None)
-
-    entity = str(entity or "")
-
-    normalized = re.sub(r"[^a-zA-Z0-9:_-]", "_", entity.lower())
+def ordered_event_key(anchor):
+    normalized = normalize_anchor(anchor)
     return f"{EVENT_INDEX_PREFIX}{normalized}"
-
-
-def is_noisy_entity(entity: str):
-    entity = str(entity or "").strip().lower()
-    if not entity:
-        return True
-    if entity in NOISY_ENTITY_PATTERNS:
-        return True
-    if len(entity) <= 2:
-        return True
-    return False
 
 
 def tokenize(text: str):
@@ -136,6 +107,83 @@ def tokenize(text: str):
             unique_words.add(word)
 
     return unique_words
+
+
+def normalize_anchor(anchor: str):
+    anchor = str(anchor or "").lower().strip()
+
+    anchor = anchor.replace(".", "")
+    anchor = anchor.replace(",", "")
+
+    anchor = re.sub(r"\s+", "_", anchor)
+    anchor = re.sub(r"[^a-z0-9:_-]", "", anchor)
+
+    return anchor
+
+
+def normalize_numeric_tokens(text: str):
+    text = str(text or "")
+
+    matches = re.findall(r"\b\d+[\.,]?\d*\b", text)
+
+    normalized = set()
+
+    for m in matches:
+        normalized.add(m)
+        normalized.add(m.replace(".", ""))
+        normalized.add(m.replace(",", ""))
+
+    return normalized
+
+
+def extract_anchors(ev: dict):
+    anchors = set()
+
+    entity = ev.get("entity")
+
+    if entity:
+        if isinstance(entity, list):
+            for x in entity:
+                if x:
+                    anchors.add(normalize_anchor(x))
+        else:
+            anchors.add(normalize_anchor(entity))
+
+    symptoms = ev.get("symptoms") or []
+
+    if not isinstance(symptoms, list):
+        symptoms = [symptoms]
+
+    for s in symptoms:
+        for token in tokenize(str(s)):
+            anchors.add(normalize_anchor(token))
+
+    tags = ev.get("tags") or []
+
+    if not isinstance(tags, list):
+        tags = [tags]
+
+    for t in tags:
+        for token in tokenize(str(t)):
+            anchors.add(normalize_anchor(token))
+
+    memory_text = ev.get("memory_text") or ""
+
+    for token in tokenize(memory_text):
+        anchors.add(normalize_anchor(token))
+
+    cleaned = set()
+
+    for a in anchors:
+        if not a:
+            continue
+
+        if len(a) <= 2:
+            continue
+
+        cleaned.add(a)
+
+    return cleaned
 
 
 def lexical_overlap_score(query: str, text: str):
@@ -366,11 +414,11 @@ def store_ordered_conversation(chat_id: str, messages: List[dict]):
     pipe.execute()
 
 
-def store_ordered_event(entity: str, chat_id: str, message_index: int):
-    if not entity:
+def store_ordered_event(anchor: str, chat_id: str, message_index: int):
+    if not anchor:
         return
 
-    key = ordered_event_key(entity)
+    key = ordered_event_key(anchor)
 
     redis_instance.rpush(
         key,
@@ -424,9 +472,7 @@ def index_ordered_events(events_dir: Path = EVENTS_DIR):
             if not isinstance(ev, dict):
                 continue
 
-            entity = ev.get("entity") or ""
-            if is_noisy_entity(entity):
-                continue
+            anchors = extract_anchors(ev)
             timestamps = ev.get("timestamp") or []
 
             if isinstance(timestamps, str):
@@ -448,7 +494,8 @@ def index_ordered_events(events_dir: Path = EVENTS_DIR):
                         continue
 
                     if str(msg.get("timestamp", "")).startswith(ts):
-                        store_ordered_event(entity, chat_id, idx)
+                        for anchor in anchors:
+                            store_ordered_event(anchor, chat_id, idx)
                         break
 
         logger.info("Indexed ordered events for %s", chat_id)
@@ -492,8 +539,20 @@ def ordered_argrep(query: str, max_results: int = 5):
 
             content = str(msg.get("content", ""))
             lowered = content.lower()
+            numeric_tokens = normalize_numeric_tokens(content)
 
-            if not any(term in lowered for term in query_terms):
+            lexical_match = any(term in lowered for term in query_terms)
+
+            numeric_match = False
+
+            for q in query_terms:
+                q_norm = q.replace(".", "").replace(",", "")
+
+                if q_norm in numeric_tokens:
+                    numeric_match = True
+                    break
+
+            if not lexical_match and not numeric_match:
                 continue
 
             dedup = f"{chat_id}:{idx}"
@@ -542,7 +601,17 @@ def ordered_search(query: str, max_results: int = 5):
             content = str(msg.get("content", ""))
             lowered = content.lower()
 
-            lexical_hits = sum(1 for term in query_terms if term in lowered)
+            lexical_hits = 0
+
+            for term in query_terms:
+                if term in lowered:
+                    lexical_hits += 1
+                    continue
+
+                normalized_term = term.replace(".", "").replace(",", "")
+
+                if normalized_term in numeric_tokens:
+                    lexical_hits += 1
 
             if lexical_hits == 0:
                 continue
@@ -984,6 +1053,7 @@ INSTRUCTIONS:
 - Do not average or merge unrelated medical facts
 - If a number, date, or diagnosis is explicitly present, prefer exact retrieval over summarization
 - If multiple conflicting memories exist, say so explicitly
+- Preserve numbers exactly as written in retrieved memory
 - Answer the user's actual retrieval question directly and briefly
 """
 
