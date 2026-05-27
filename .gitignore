@@ -5,3 +5,7 @@ data/*
 
 ### macOS ###
 *.DS_Store
+
+### escludi dump di redis ###
+*.rdb
+dump.rdb
