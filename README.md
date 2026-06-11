@@ -1,38 +1,42 @@
 # memory-locality
 
-Local-first episodic memory retrieval for LLMs.
+Local-first conversational memory retrieval for LLMs.
 
-A local-first long-term memory system for LLMs.
+This project explores an alternative approach to long-term conversational memory based on:
 
-This project extracts conversational memories from ChatGPT exports, indexes them into Redis Stack using vector embeddings, retrieves semantically relevant episodic context, and builds compact memory packages for downstream LLMs.
+- ordered conversational locality
+- lightweight lexical anchoring
+- conservative retrieval
+- inspectable memory reconstruction
 
-The goal is not to replace LLM reasoning, but to improve contextual continuity across fragmented conversations while keeping the retrieval layer simple, deterministic, and inspectable.
+instead of aggressive semantic reranking or heavily abstracted memory graphs.
 
-Core principle:
+The system extracts conversational histories, indexes them into Redis, retrieves relevant conversational regions, reconstructs local continuity, and provides contextual memory packages for downstream LLMs.
 
-> embeddings perform recall
-> retrieval preserves locality
-> the final LLM performs reasoning
+The core idea is simple:
+
+> retrieve the right conversational neighborhood and let the LLM reason over it.
 
 ---
 
-# Philosophy
+# Current Direction
 
-This project intentionally avoids:
+The project originally started as a semantic vector-retrieval system.
 
-- heavy knowledge graph engineering
-- manually curated ontologies
-- complex agent systems
-- symbolic reasoning pipelines
+Over time, experiments showed that conversational memory behaves differently from traditional document retrieval:
 
-Instead, it focuses on:
+- semantic similarity alone often causes topic contamination
+- aggressive reranking easily over-interprets memory
+- conversational continuity matters more than expected
+- locality reconstruction is often more important than semantic expansion
 
-- semantic recall
-- lightweight locality filtering
-- compact episodic memory packaging
-- local-first architecture
-- simple inspectable code
-- leveraging modern LLM reasoning directly
+The current architecture increasingly focuses on:
+
+- ordered conversational memory
+- locality-preserving retrieval
+- lightweight anchor acquisition
+- minimal intermediate reasoning
+- explicit retrieval inspectability
 
 The retrieval layer retrieves.
 The downstream LLM reasons.
@@ -42,282 +46,172 @@ The downstream LLM reasons.
 # Features
 
 - Export ChatGPT conversations into text files
-- Extract structured events using Ollama
-- Index chunks and events into Redis Stack
-- Semantic vector retrieval using sentence-transformers (all-MiniLM-L6-v2)
-- Mixed retrieval:
-  - conversational chunks
-  - structured event memories
-- Lightweight lexical anchoring to reduce topic drift
-- Memory grouping for stronger semantic locality
-- Prompt generation for downstream LLMs
+- Ordered conversational memory indexing
+- Lightweight lexical anchor extraction
+- Semantic vector recall
+- Locality-preserving retrieval
+- Episodic conversational expansion
+- Prompt/context packaging for downstream LLMs
 - Optional local answering through Ollama
+- Inspectable retrieval traces
 
 ---
 
 # Current Architecture
 
-Pipeline:
+Current retrieval flow:
 
 ```text
 ChatGPT exports
     ↓
-chunk extraction
+conversation extraction
     ↓
-event extraction (Ollama)
+ordered conversational indexing
     ↓
-embeddings generation
+lightweight anchor extraction
     ↓
-Redis Stack indexing
+semantic + lexical landing
     ↓
-semantic retrieval
-+ locality filtering
-+ memory grouping
+local conversational expansion
     ↓
-episodic memory packaging
+context packaging
     ↓
 downstream LLM reasoning
 ```
 
+The system intentionally keeps retrieval conservative.
 
-The retrieval layer intentionally remains conservative.
+Rather than aggressively rewriting queries or constructing symbolic memory graphs, the project focuses on:
 
-Rather than aggressively rewriting queries or performing intermediate reasoning, the system focuses on preserving semantic locality and reducing cross-domain contamination between memories.
-
----
-
-# v0.1 Architectural Baseline
-
-Version v0.1 represents the first stable baseline of the current retrieval architecture.
-
-The system currently relies on:
-
-- semantic vector recall
-- lightweight lexical anchoring
-- episodic grouping
-- conservative retrieval heuristics
-- locality-preserving context packaging
-
-The project intentionally prioritizes retrieval stability and inspectability over aggressive semantic expansion.
-
-Current experimentation suggests that conversational memory retrieval behaves differently from traditional document RAG systems.
-
-Conversation histories are strongly:
-
-- temporal
-- locality-sensitive
-- episodic
-- adjacency-dependent
-
-This makes overly interpretative retrieval pipelines fragile.
-
-The current architecture should therefore be viewed as a conservative retrieval baseline rather than a finalized memory architecture.
+- conversational landing precision
+- locality preservation
+- retrieval inspectability
+- minimizing semantic contamination
 
 ---
 
-# Future Directions
+# Current Research Areas
 
-Current experimentation areas:
+Current exploration areas include:
 
-- retrieval precision tuning
-- memory deduplication
-- adaptive locality windows
-- hybrid lexical/vector retrieval
-- ordered conversational memory structures
-- locality-preserving retrieval architectures
-- lightweight grep-oriented retrieval
+- anchor saliency ranking
+- ordered conversational retrieval
+- hybrid lexical/semantic landing
+- retrieval trace visualization
+- lightweight semantic disambiguation
+- conversational continuity reconstruction
 - memory aging and pruning
-- improved event extraction quality
+- deterministic retrieval evaluation
 
 ---
 
-# What This Project Is NOT
+# Key Observations
 
-This is not:
+Several consistent patterns emerged during experimentation.
 
-- an autonomous AI agent
-- a replacement for LLM reasoning
-- a handcrafted knowledge graph system
-- a symbolic expert system
-- a manually curated ontology
+## Semantic retrieval alone is unstable
 
-The objective is intentionally narrower and more practical:
+Pure embedding similarity retrieves semantically adjacent but contextually unrelated memories surprisingly often.
 
-> retrieve the right memories at the right time and let the LLM reason over them.
+As conversational histories grow, nearby domains begin contaminating each other:
 
----
+- health
+- finance
+- software
+- vehicles
+- personal logistics
 
-# Lessons Learned So Far
-
-A few important findings emerged during development:
-
-## 1. Semantic recall alone is not enough
-
-Pure embedding similarity gives strong recall, but retrieval precision degrades as memory volume grows.
-
-Semantically adjacent but unrelated memories easily leak into prompts, especially across nearby conversational domains.
-
-Example:
-
-Query:
-
-```text
-acqua abitacolo auto tappetini
-```
-
-Naive semantic retrieval produced unrelated memories involving:
-- house condensation
-- mortgage discussions
-- travel planning
-- automation systems
-
-because embeddings alone collapsed nearby conversational contexts.
-
-After lightweight locality filtering:
-- flooded driver-side floor
-- cabin moisture
-- evaporator drainage
-- wet floor mats
-- water infiltration
-
-Retrieval quality improved significantly without adding extra reasoning layers.
+This creates semantic drift and unstable retrieval.
 
 ---
 
-## 2. Overengineering memory structure is risky
+## Ordered conversational locality matters
 
-Early experiments around:
-- entity normalization
-- fact classification
-- relationship extraction
-- graph modeling
-- domain taxonomies
+Retrieval quality improved significantly when the system landed inside the correct conversational neighborhood before expanding context.
 
-quickly increased complexity without proportionally improving answer quality.
+The strongest improvements came from:
 
-Modern LLMs already perform much of this reasoning internally.
+- locality preservation
+- positional continuity
+- episodic adjacency
+- lightweight lexical landing
 
----
-
-## 3. Memory packaging matters more than symbolic modeling
-
-The biggest gains came from:
-- cleaner memory snippets
-- reducing retrieval noise
-- better context assembly
-- concise prompt construction
-
-rather than deeper symbolic structure.
+rather than aggressive semantic reranking.
 
 ---
 
-## 4. Overly interpretative retrieval is fragile
+## Over-interpretative retrieval is fragile
 
 Experiments with:
+
 - query rewriting
 - aggressive reranking
 - semantic expansion
-- intermediate reasoning layers
+- graph enrichment
 
-often degraded retrieval stability instead of improving it.
+often degraded retrieval quality instead of improving it.
 
-The best results so far come from conservative retrieval:
-- semantic recall
-- lightweight locality filtering
-- compact memory packaging
-- reasoning delegated entirely to the final LLM
+The best results currently come from:
+
+```text
+lightweight retrieval
++ locality reconstruction
++ minimal interpretation
+```
 
 ---
 
-## 5. Episodic locality matters
+## Retrieval and synthesis are separate problems
 
-One of the hardest problems is not recall itself, but preventing nearby memories from contaminating each other.
+As retrieval quality improved, another distinction became clear:
 
-Long conversations naturally drift across domains:
-health, finance, cars, software, personal logistics, etc.
+- retrieving the correct conversational region
+- generating the correct final answer
 
-Memory grouping and lightweight lexical anchoring currently provide a simpler and more stable solution than deeper symbolic structures.
+are different problems.
+
+Current failures increasingly involve:
+
+- saliency ranking
+- synthesis drift
+- weak identity reconstruction
+- answer prioritization
+
+rather than retrieval collapse itself.
 
 ---
 
 # Project Status
 
-Current maturity level:
+Current status:
 
-## Working well
+## Stable
+
 - local indexing
-- semantic retrieval
-- memory resurfacing
+- ordered conversational retrieval
+- locality expansion
 - prompt augmentation
-- local inference via Ollama
+- Ollama integration
+- inspectable retrieval traces
 
-## Still experimental
-- reranking
-- retrieval precision tuning
-- query expansion
-- memory deduplication
-- relevance scoring
+## Experimental
 
-The project is currently best viewed as:
+- anchor saliency ranking
+- hybrid lexical/semantic retrieval
+- identity reconstruction
+- synthesis grounding
+- retrieval evaluation
+- benchmark automation
 
-> a practical local-first episodic memory layer for LLMs.
+The project should currently be viewed as:
 
-The project should currently be considered an experimental systems prototype rather than a production-ready framework.
-
----
-
-
-# Observed Failure Modes
-
-- semantic topic contamination
-- conversational drift across domains
-- reranking instability
-- query over-interpretation
-- memory flooding from long chats
-
----
-
-# Current Architectural Limitations
-
-Several limitations emerged during experimentation with conversational memory retrieval.
-
-## Semantic retrieval can become overly interpretative
-
-Embedding similarity often retrieves semantically adjacent but contextually unrelated memories.
-
-As conversational history grows, nearby domains begin contaminating each other:
-- health
-- finance
-- software
-- personal logistics
-- vehicles
-- household issues
-
-This produces retrieval instability even when embedding similarity scores remain high.
-
-## Conversational continuity is difficult to reconstruct after retrieval
-
-The current pipeline retrieves fragmented chunks first and only later attempts to rebuild episodic continuity.
-
-This requires additional heuristics:
-- memory grouping
-- locality filtering
-- lexical anchoring
-- score windows
-- reranking constraints
-
-These mechanisms improve results, but they also suggest that preserving conversational locality directly at the storage layer may ultimately be a simpler and more robust approach.
-
-Future versions may therefore explore ordered conversational memory structures and hybrid lexical/semantic retrieval strategies.
-
-Examples shown in this repository are intentionally anonymized and simplified.
-The project originated from experiments on real conversational histories, but personal or sensitive data is excluded from public documentation.
+> an experimental conversational memory architecture for LLM systems.
 
 ---
 
 # Repository Structure
 
-The implementation intentionally lives mostly in a single file:
+The current implementation intentionally lives mostly in a single file:
 
 ```text
 main.py
@@ -352,19 +246,15 @@ User query:
 "che problemi ha la mia Peugeot 307?"
 ```
 
-Desired retrieval behavior:
+Desired behavior:
 
-- recover relevant memories from past chats
-- avoid unrelated domains
-- preserve useful context
-- let the downstream LLM combine:
-  - retrieved memories
-  - general automotive knowledge
+- retrieve conversational regions related to the same vehicle
+- preserve temporal and conversational continuity
+- avoid contamination from unrelated domains
+- reconstruct useful troubleshooting context
+- allow the downstream LLM to reason over grounded memory
 
-into a grounded answer.
-
-The system should avoid premature reasoning.
-Its role is retrieval and contextual packaging.
+The retrieval layer should remain simple, inspectable and locality-aware.
 
 ---
 
@@ -418,12 +308,12 @@ Typical workflow:
 
 ```text
 ChatGPT export
-    → chunk extraction
-    → event extraction
-    → embedding generation
-    → Redis indexing
-    → semantic retrieval
-    → memory packaging
+    → conversation extraction
+    → ordered memory indexing
+    → anchor extraction
+    → retrieval landing
+    → locality expansion
+    → context packaging
     → downstream LLM reasoning
 ```
 
