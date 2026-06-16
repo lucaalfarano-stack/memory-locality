@@ -70,6 +70,7 @@ MEMORY_GROUP_SIZE = 12
 ORDERED_PREFIX = "arr:chat:"
 EVENT_INDEX_PREFIX = "arr:event:"
 ORDERED_WINDOW = 3
+RERANK_TOP_K = 5
 TRACE_LOGGER = logging.getLogger("retrieval")
 
 
@@ -288,6 +289,7 @@ CHUNKS_DIR = Path("./data/chunks")
 EVENTS_DIR = Path("./data/events")
 
 MODEL = None
+RERANK_MODEL = None
 
 
 def get_model():
@@ -296,6 +298,15 @@ def get_model():
     if MODEL is None:
         MODEL = SentenceTransformer("all-MiniLM-L6-v2")
     return MODEL
+
+
+def get_rerank_model():
+    global RERANK_MODEL
+
+    if RERANK_MODEL is None:
+        RERANK_MODEL = "qwen2.5:3b"
+
+    return RERANK_MODEL
 
 
 redis_instance = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False)
@@ -606,6 +617,12 @@ def ordered_argrep(query: str, max_results: int = 5):
         reverse=True,
     )
 
+    ordered_hits = rerank_hits(
+        query,
+        ordered_hits,
+        model=get_rerank_model(),
+    )
+
     for hit in ordered_hits[:max_results]:
         anchor = hit.get("anchor_message") or {}
 
@@ -693,6 +710,12 @@ def ordered_search(query: str, max_results: int = 5):
         reverse=True,
     )
 
+    ordered_hits = rerank_hits(
+        query,
+        ordered_hits,
+        model=get_rerank_model(),
+    )
+
     for hit in ordered_hits[:max_results]:
         anchor = hit.get("anchor_message") or {}
 
@@ -710,6 +733,78 @@ def ordered_search(query: str, max_results: int = 5):
         )
 
     return ordered_hits[:max_results]
+
+
+def rerank_hits(query: str, hits, model: str):
+    if not hits:
+        return hits
+
+    candidates = []
+
+    for i, hit in enumerate(hits[:RERANK_TOP_K]):
+        anchor = hit.get("anchor_message") or {}
+        content = anchor.get("content", "")
+        role = anchor.get("role", "unknown")
+        candidates.append(f"[{i}] role={role}\n{content[:800]}")
+
+    rerank_prompt = f"""
+You are a retrieval reranker.
+
+Your task is ONLY to rank which candidate messages are most relevant to answering the query.
+
+QUERY:
+{query}
+
+CANDIDATES:
+
+{chr(10).join(candidates)}
+
+Return ONLY a JSON array of candidate indexes ordered from best to worst.
+
+Example:
+[2,0,1]
+"""
+
+    TRACE_LOGGER.info(
+        "[RERANK] reranking %d candidates using %s",
+        len(candidates),
+        model,
+    )
+
+    try:
+        response = run_ollama(rerank_prompt, model=model)
+        TRACE_LOGGER.info("[RERANK RAW] %s", response)
+        match = re.search(r"\[(.*?)\]", response, re.DOTALL)
+
+        if not match:
+            return hits
+
+        values = match.group(1)
+        ordered_indexes = []
+
+        for part in values.split(","):
+            part = part.strip()
+            if part.isdigit():
+                idx = int(part)
+                if 0 <= idx < len(hits[:RERANK_TOP_K]):
+                    ordered_indexes.append(idx)
+
+        if not ordered_indexes:
+            return hits
+
+        reranked = [hits[idx] for idx in ordered_indexes]
+        remaining = [h for i, h in enumerate(hits) if i not in ordered_indexes]
+
+        TRACE_LOGGER.info(
+            "[RERANK] final ordering: %s",
+            ordered_indexes,
+        )
+
+        return reranked + remaining
+
+    except Exception as e:
+        TRACE_LOGGER.warning("[RERANK FAILED] %s", e)
+        return hits
 
 
 def build_ordered_context(results):
@@ -1581,6 +1676,11 @@ def main() -> None:
         "--ollama-model",
         default="phi3:latest",
         help="Ollama model to use",
+    )
+    search_parser.add_argument(
+        "--rerank-model",
+        default="qwen2.5:3b",
+        help="Ollama model used for retrieval reranking",
     )
     search_parser.add_argument(
         "--trace",
