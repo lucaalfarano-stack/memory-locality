@@ -70,6 +70,7 @@ MEMORY_GROUP_SIZE = 12
 ORDERED_PREFIX = "arr:chat:"
 EVENT_INDEX_PREFIX = "arr:event:"
 ORDERED_WINDOW = 3
+TRACE_LOGGER = logging.getLogger("retrieval")
 
 
 def parse_message_line(line: str):
@@ -507,6 +508,15 @@ def ordered_expand(chat_id: str, index: int, window: int = ORDERED_WINDOW):
     start = max(0, index - window)
     end = index + window
 
+    TRACE_LOGGER.info(
+        "[LOCALITY] expanding chat=%s around message=%d window=%d (%d-%d)",
+        chat_id,
+        index,
+        window,
+        start,
+        end,
+    )
+
     items = redis_instance.lrange(key, start, end)
 
     parsed = []
@@ -517,6 +527,12 @@ def ordered_expand(chat_id: str, index: int, window: int = ORDERED_WINDOW):
         except Exception:
             continue
 
+    TRACE_LOGGER.info(
+        "[LOCALITY] expanded %d messages from %s",
+        len(parsed),
+        chat_id,
+    )
+
     return parsed
 
 
@@ -525,6 +541,8 @@ def ordered_argrep(query: str, max_results: int = 5):
     seen = set()
 
     query_terms = tokenize(query)
+    TRACE_LOGGER.info("[QUERY] %s", query)
+    TRACE_LOGGER.info("[TOKENS] %s", sorted(query_terms))
 
     for key in redis_instance.scan_iter(f"{ORDERED_PREFIX}*"):
         chat_id = key.decode().replace(ORDERED_PREFIX, "")
@@ -541,18 +559,19 @@ def ordered_argrep(query: str, max_results: int = 5):
             lowered = content.lower()
             numeric_tokens = normalize_numeric_tokens(content)
 
-            lexical_match = any(term in lowered for term in query_terms)
+            lexical_hits = 0
 
-            numeric_match = False
+            for term in query_terms:
+                if term in lowered:
+                    lexical_hits += 1
+                    continue
 
-            for q in query_terms:
-                q_norm = q.replace(".", "").replace(",", "")
+                normalized_term = term.replace(".", "").replace(",", "")
 
-                if q_norm in numeric_tokens:
-                    numeric_match = True
-                    break
+                if normalized_term in numeric_tokens:
+                    lexical_hits += 1
 
-            if not lexical_match and not numeric_match:
+            if lexical_hits == 0:
                 continue
 
             dedup = f"{chat_id}:{idx}"
@@ -562,21 +581,46 @@ def ordered_argrep(query: str, max_results: int = 5):
 
             seen.add(dedup)
 
+            # Ranking stays intentionally lexical and language-agnostic.
+            # Prefer simple overlap scoring over hardcoded semantic heuristics.
+            score = lexical_hits
+
             ordered_hits.append(
                 {
                     "chat_id": chat_id,
                     "message_index": idx,
-                    "score": sum(1 for t in query_terms if t in lowered),
+                    "score": score,
                     "anchor_message": msg,
                     "context": ordered_expand(chat_id, idx),
                 }
             )
+
+    TRACE_LOGGER.info(
+        "[LANDING] collected %d candidate matches before ranking",
+        len(ordered_hits),
+    )
 
     ordered_hits = sorted(
         ordered_hits,
         key=lambda x: x["score"],
         reverse=True,
     )
+
+    for hit in ordered_hits[:max_results]:
+        anchor = hit.get("anchor_message") or {}
+
+        TRACE_LOGGER.info(
+            "[MATCH] chat=%s message=%d score=%s",
+            hit["chat_id"],
+            hit["message_index"],
+            hit["score"],
+        )
+
+        TRACE_LOGGER.info(
+            "[ANCHOR] %s: %s",
+            anchor.get("role", "UNKNOWN"),
+            anchor.get("content", "")[:300],
+        )
 
     return ordered_hits[:max_results]
 
@@ -586,6 +630,8 @@ def ordered_search(query: str, max_results: int = 5):
     seen = set()
 
     query_terms = tokenize(query)
+    TRACE_LOGGER.info("[QUERY] %s", query)
+    TRACE_LOGGER.info("[TOKENS] %s", sorted(query_terms))
 
     for key in redis_instance.scan_iter(f"{ORDERED_PREFIX}*"):
         chat_id = key.decode().replace(ORDERED_PREFIX, "")
@@ -600,6 +646,7 @@ def ordered_search(query: str, max_results: int = 5):
 
             content = str(msg.get("content", ""))
             lowered = content.lower()
+            numeric_tokens = normalize_numeric_tokens(content)
 
             lexical_hits = 0
 
@@ -635,17 +682,42 @@ def ordered_search(query: str, max_results: int = 5):
                 }
             )
 
+    TRACE_LOGGER.info(
+        "[LANDING] collected %d candidate matches before ranking",
+        len(ordered_hits),
+    )
+
     ordered_hits = sorted(
         ordered_hits,
         key=lambda x: x["score"],
         reverse=True,
     )
 
+    for hit in ordered_hits[:max_results]:
+        anchor = hit.get("anchor_message") or {}
+
+        TRACE_LOGGER.info(
+            "[MATCH] chat=%s message=%d score=%s",
+            hit["chat_id"],
+            hit["message_index"],
+            hit["score"],
+        )
+
+        TRACE_LOGGER.info(
+            "[ANCHOR] %s: %s",
+            anchor.get("role", "UNKNOWN"),
+            anchor.get("content", "")[:300],
+        )
+
     return ordered_hits[:max_results]
 
 
 def build_ordered_context(results):
     blocks = []
+    TRACE_LOGGER.info(
+        "[PACKAGING] building ordered context from %d retrieval hits",
+        len(results),
+    )
 
     for hit in results:
         lines = []
@@ -680,9 +752,22 @@ def build_ordered_context(results):
             f"MATCH SCORE: {hit['score']}\n" + "\n".join(lines)
         )
 
+        TRACE_LOGGER.info(
+            "[CONTEXT BLOCK] chat=%s score=%s lines=%d",
+            hit["chat_id"],
+            hit["score"],
+            len(lines),
+        )
+
         blocks.append(block)
 
-    return "\n\n---\n\n".join(blocks)
+    final_context = "\n\n---\n\n".join(blocks)
+    TRACE_LOGGER.info(
+        "[FINAL CONTEXT] built ordered context (%d chars)",
+        len(final_context),
+    )
+
+    return final_context
 
 
 def index_chunks(chunks_dir: Path = CHUNKS_DIR):
@@ -694,7 +779,7 @@ def index_chunks(chunks_dir: Path = CHUNKS_DIR):
         parts = text.split("\n\n")
 
         for i, chunk in enumerate(parts):
-            logger.info("Indexing chunk %s #%d", chat_id, i)
+            logger.debug("Indexing chunk %s #%d", chat_id, i)
             group_id = i // MEMORY_GROUP_SIZE
             memory_group = f"{chat_id}:g{group_id}"
 
@@ -775,7 +860,7 @@ def index_events(events_dir: Path = EVENTS_DIR):
                 continue
 
             key = f"{PREFIX}event:{chat_id}:{i}"
-            logger.info("Indexing event %s #%d (%s)", chat_id, i, entity)
+            logger.debug("Indexing event %s #%d (%s)", chat_id, i, entity)
             store_doc(
                 key,
                 {
@@ -1024,6 +1109,10 @@ def build_prompt(user_query: str, context: str) -> str:
     """
     Build final prompt for LLM using retrieved context.
     """
+    TRACE_LOGGER.info(
+        "[PROMPT] packaging prompt for downstream LLM (%d context chars)",
+        len(context),
+    )
     return f"""
 You are an assistant with access to retrieved long-term memory.
 
@@ -1493,12 +1582,22 @@ def main() -> None:
         default="phi3:latest",
         help="Ollama model to use",
     )
+    search_parser.add_argument(
+        "--trace",
+        action="store_true",
+        help="Enable retrieval tracing logs",
+    )
 
     cleanup_parser = subparsers.add_parser("cleanup")
 
     args = parser.parse_args()
 
     setup_logging()
+
+    if getattr(args, "trace", False):
+        TRACE_LOGGER.setLevel(logging.INFO)
+    else:
+        TRACE_LOGGER.setLevel(logging.WARNING)
 
     base_dir = Path.cwd()
 
@@ -1570,16 +1669,16 @@ def main() -> None:
 
         prompt = build_prompt(args.query, context)
 
-        print("\n===== CONTEXT =====\n")
-        print(context)
+        logger.info("===== CONTEXT =====")
+        logger.info("\n%s", context)
 
-        print("\n===== PROMPT =====\n")
-        print(prompt)
+        logger.info("===== PROMPT =====")
+        logger.info("\n%s", prompt)
 
         if args.ollama:
-            print("\n===== OLLAMA RESPONSE =====\n")
+            logger.info("===== OLLAMA RESPONSE =====")
             answer = run_ollama(prompt, model=args.ollama_model)
-            print(answer)
+            logger.info("\n%s", answer)
 
     elif args.command == "cleanup":
         cleanup_index()
