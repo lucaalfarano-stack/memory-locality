@@ -286,7 +286,7 @@ Semantically adjacent memories contaminate each other.
 Queries like:
 
 ```text
-chi è Enrico?
+chi è Filippo?
 ```
 
 are difficult because lexical recurrence alone is insufficient.
@@ -315,7 +315,7 @@ Very common entities produce weak positional specificity.
 Example:
 
 ```text
-Enrico
+Filippo
 ```
 
 appears in many unrelated conversational moments.
@@ -357,7 +357,7 @@ Examples:
 ### factual recall
 
 ```text
-quanti globuli bianchi aveva Enrico al ricovero?
+quanti globuli bianchi aveva Filippo al ricovero?
 ```
 
 ### episodic reconstruction
@@ -369,7 +369,7 @@ cosa successe durante il primo ricovero?
 ### identity reconstruction
 
 ```text
-chi è Enrico?
+chi è Filippo?
 ```
 
 These likely require different anchor acquisition strategies.
@@ -422,3 +422,116 @@ lexical landing
 ```
 
 may produce more stable conversational memory reconstruction than heavily semantic retrieval pipelines.
+
+---
+
+# Next Retrieval Objectives
+
+The retrieval layer is increasingly stable.
+
+The next objective is not improving retrieval relevance, but evaluating whether ordered memory can support historical reconstruction.
+
+The focus shifts from:
+
+- finding relevant memories
+
+Toward:
+
+- finding the first appearance of an idea
+- identifying the current position on a topic
+- reconstructing idea evolution over time
+- surfacing contradictory positions
+- reconstructing project state
+
+These objectives should be evaluated incrementally.
+
+---
+
+## Phase 1 - Earliest Mention
+
+Goal:
+
+Find the first appearance of an idea or topic.
+
+Examples:
+
+- Quando ho parlato per la prima volta della Peugeot?
+- Quando è comparso per la prima volta Filippo nelle conversazioni?
+- Quando ho iniziato a discutere del mutuo in Irlanda?
+
+Success Criteria:
+
+- earliest relevant memory retrieved
+- chronological ordering preserved
+- conversational locality preserved
+
+Status:
+
+Not Started
+
+---
+
+## Phase 2 - Latest Position
+
+Goal:
+
+Identify the most recent position on a topic.
+
+Examples:
+
+- Qual è la situazione più recente della terapia di Filippo?
+- Qual è la mia posizione attuale sul trasferimento in Italia?
+
+Status:
+
+Not Started
+
+---
+
+## Phase 3 - Evolution Timeline
+
+Goal:
+
+Reconstruct how an idea evolved over time.
+
+Examples:
+
+- Come si è evoluta la situazione della terapia di Filippo?
+- Come si è evoluta la discussione sul mutuo Irlanda vs Italia?
+
+Status:
+
+Not Started
+
+---
+
+## Phase 4 - Contradiction Retrieval
+
+Goal:
+
+Surface conflicting positions across time.
+
+Examples:
+
+- Ho cambiato idea sul trasferimento in Italia?
+- Ci sono state valutazioni contrastanti sul mutuo Irlanda vs Italia?
+
+Status:
+
+Not Started
+
+---
+
+## Phase 5 - Project State Reconstruction
+
+Goal:
+
+Reconstruct the current state of a long-running project.
+
+Examples:
+
+- A che punto della terapia si trova adesso Filippo?
+
+Status:
+
+Not Started

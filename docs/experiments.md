@@ -1754,3 +1754,56 @@ The current ordered-memory approach appears strongest when:
 - object/entity recurrence matters
 - inspectability matters
 - deterministic grounding matters
+
+---
+
+# Next Evaluation Phase: History-Oriented Retrieval
+
+Previous experiments focused on:
+
+- retrieval precision
+- locality preservation
+- semantic contamination
+- conversational reconstruction
+
+The next phase evaluates whether ordered memory can reconstruct the historical evolution of ideas.
+
+## Phase 1 - Earliest Mention
+
+### Benchmark 1
+
+Question:
+
+```text
+Quando ho iniziato a discutere del mutuo in Irlanda?
+```
+
+Desired result:
+
+- earliest mortgage-related discussion
+- supporting conversational locality
+- chronological correctness
+
+Status:
+
+Not Started
+
+---
+
+### Benchmark 2
+
+Question:
+
+```text
+Quando ho parlato per la prima volta dei problemi della Peugeot 307?
+```
+
+Desired result:
+
+- earliest Peugeot-related discussion
+- supporting conversational locality
+- chronological correctness
+
+Status:
+
+Not Started
