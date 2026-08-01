@@ -15,6 +15,7 @@ Pipeline:
 import json
 import logging
 from pathlib import Path
+from enum import Enum
 
 import argparse
 import time
@@ -71,6 +72,7 @@ ORDERED_PREFIX = "arr:chat:"
 EVENT_INDEX_PREFIX = "arr:event:"
 ORDERED_WINDOW = 3
 RERANK_TOP_K = 5
+EARLIEST_CANDIDATES = 5
 TRACE_LOGGER = logging.getLogger("retrieval")
 
 
@@ -290,6 +292,16 @@ EVENTS_DIR = Path("./data/events")
 
 MODEL = None
 RERANK_MODEL = None
+INTENT_MODEL = None
+
+# --------------------------------
+# Retrieval Intent Classification
+# --------------------------------
+
+
+class RetrievalIntent(Enum):
+    EARLIEST_MENTION = "EARLIEST_MENTION"
+    GENERAL = "GENERAL"
 
 
 def get_model():
@@ -309,13 +321,21 @@ def get_rerank_model():
     return RERANK_MODEL
 
 
+def get_intent_model():
+    """Lazy configuration for the intent-classification model."""
+    global INTENT_MODEL
+
+    if INTENT_MODEL is None:
+        INTENT_MODEL = "qwen2.5:1.5b"
+
+    return INTENT_MODEL
+
+
 redis_instance = redis.Redis(host=REDIS_HOST, port=REDIS_PORT, decode_responses=False)
 
 
 def run_ollama(prompt: str, model: str = "phi3:latest") -> str:
-    """
-    Sends prompt to local Ollama and returns the generated response.
-    """
+    """Sends a prompt to the local Ollama server and returns the generated response."""
     import requests
 
     try:
@@ -333,6 +353,45 @@ def run_ollama(prompt: str, model: str = "phi3:latest") -> str:
     except Exception as e:
         logger.error("Ollama inference error: %s", e)
         return ""
+
+
+def classify_intent(query: str, model: str | None = None) -> RetrievalIntent:
+    """Classify the retrieval intent using a lightweight local LLM."""
+    prompt = f"""
+Classify the user's retrieval intent.
+
+Return EXACTLY one token:
+- EARLIEST_MENTION
+- GENERAL
+
+EARLIEST_MENTION:
+The user asks when something was first, earliest, initial or original discussed.
+
+GENERAL:
+Any other retrieval request.
+
+USER QUERY:
+{query}
+"""
+
+    # TRACE logging before run_ollama
+    TRACE_LOGGER.info("[INTENT] classifying query: %s", query)
+    TRACE_LOGGER.info("[INTENT] using model: %s", model or get_intent_model())
+    TRACE_LOGGER.info("[INTENT PROMPT]\n%s", prompt)
+
+    response = run_ollama(prompt, model=model or get_intent_model()).strip().upper()
+
+    # TRACE logging after run_ollama
+    TRACE_LOGGER.info("[INTENT RAW] %r", response)
+
+    try:
+        # TRACE logging parsed intent
+        TRACE_LOGGER.info("[INTENT PARSED] %s", response)
+        return RetrievalIntent(response)
+    except ValueError:
+        TRACE_LOGGER.info("[INTENT FALLBACK] defaulting to GENERAL")
+        TRACE_LOGGER.warning("[INTENT] unexpected classifier output: %s", response)
+        return RetrievalIntent.GENERAL
 
 
 def create_index():
@@ -623,6 +682,15 @@ def ordered_argrep(query: str, max_results: int = 5):
         model=get_rerank_model(),
     )
 
+    # Phase 1: preserve semantic relevance, then expose chronology.
+    ordered_hits = (
+        sorted(
+            ordered_hits[:EARLIEST_CANDIDATES],
+            key=lambda h: float(h["anchor_message"]["timestamp"]),
+        )
+        + ordered_hits[EARLIEST_CANDIDATES:]
+    )
+
     for hit in ordered_hits[:max_results]:
         anchor = hit.get("anchor_message") or {}
 
@@ -814,6 +882,17 @@ def build_ordered_context(results):
         len(results),
     )
 
+    from datetime import datetime, timezone
+
+    def format_timestamp(ts):
+        if not ts:
+            return None
+        try:
+            dt = datetime.fromtimestamp(float(ts), tz=timezone.utc)
+            return dt.strftime("%A, %B %d, %Y at %I:%M:%S %p UTC")
+        except Exception:
+            return None
+
     for hit in results:
         lines = []
 
@@ -823,6 +902,12 @@ def build_ordered_context(results):
 
         if anchor_content:
             lines.append("ANCHOR MESSAGE:")
+            anchor_timestamp = anchor.get("timestamp", "")
+            if anchor_timestamp:
+                formatted = format_timestamp(anchor_timestamp)
+                if formatted:
+                    lines.append(f"DATE: {formatted}")
+                lines.append(f"TIMESTAMP: {anchor_timestamp}")
             lines.append(f"{anchor_role}: {anchor_content}")
             lines.append("")
             lines.append("LOCAL CONTEXT:")
@@ -837,7 +922,15 @@ def build_ordered_context(results):
             if content == anchor_content:
                 continue
 
-            lines.append(f"{role}: {content}")
+            timestamp = msg.get("timestamp", "")
+            if timestamp:
+                formatted = format_timestamp(timestamp)
+                if formatted:
+                    lines.append(f"[{formatted}] {role}: {content}")
+                else:
+                    lines.append(f"[{timestamp}] {role}: {content}")
+            else:
+                lines.append(f"{role}: {content}")
 
         if not lines:
             continue
@@ -1200,6 +1293,45 @@ CONTEXT:
     return block.strip()
 
 
+def build_earliest_prompt(user_query: str, context: str) -> str:
+    """
+    Build a prompt specifically for earliest mention retrieval.
+    """
+    TRACE_LOGGER.info(
+        "[PROMPT] packaging EARLIEST_MENTION prompt for downstream LLM (%d context chars)",
+        len(context),
+    )
+    return f"""
+You are an assistant with access to retrieved long-term memory.
+
+The retrieval system has already identified candidate conversations.
+They are already ordered from the earliest occurrence to the latest occurrence.
+
+Your task is to answer a question about the FIRST time something was mentioned.
+
+RETRIEVED MEMORIES:
+{context}
+
+USER QUESTION:
+{user_query}
+
+INSTRUCTIONS:
+- First identify which CHAT block is actually relevant to the user's question.
+- Ignore any unrelated CHAT blocks.
+- The FIRST relevant CHAT block is the correct answer.
+- Do NOT compare multiple conversations.
+- Do NOT summarize all retrieved memories.
+- If the user asks "when", begin your answer by stating when the first relevant conversation occurred.
+- If a TIMESTAMP field is present, convert it into a human-readable date and time before answering. Never report the raw Unix timestamp.
+- Then briefly explain what was discussed in that conversation.
+- Use the ANCHOR MESSAGE as the primary evidence.
+- Use LOCAL CONTEXT only to clarify the meaning of the anchor message.
+- Preserve numbers, diagnoses and measurements exactly as written.
+- If the relevant CHAT block does not contain enough information to answer, explicitly say so.
+- Keep the answer concise.
+"""
+
+
 def build_prompt(user_query: str, context: str) -> str:
     """
     Build final prompt for LLM using retrieved context.
@@ -1212,9 +1344,9 @@ def build_prompt(user_query: str, context: str) -> str:
 You are an assistant with access to retrieved long-term memory.
 
 Your task:
-Answer the user's question using:
-1. Retrieved memories when relevant
-2. General knowledge when memories are incomplete
+Answer ONLY using the retrieved memories below.
+Do NOT summarize all retrieved memories.
+Some retrieved memories may be unrelated to the user's question.
 
 ---
 
@@ -1229,9 +1361,13 @@ USER QUESTION:
 ---
 
 INSTRUCTIONS:
-- Retrieved messages preserve original conversational locality
-- ANCHOR MESSAGE is the primary retrieval hit
-- LOCAL CONTEXT contains adjacent conversational turns
+- Retrieved messages preserve original conversational locality.
+- Each CHAT block is independent.
+- Some CHAT blocks may be completely unrelated to the user's question.
+- Ignore unrelated CHAT blocks entirely.
+- First identify which CHAT blocks are relevant.
+- If the user asks for the first, earliest, initial or original occurrence of something, the relevant CHAT blocks are already ordered from earliest to latest. Use the first relevant CHAT block only.
+- Do not infer dates, durations or chronology that are not explicitly present.
 - Prioritize concrete facts explicitly stated in the ANCHOR MESSAGE
 - Use LOCAL CONTEXT only to reconstruct surrounding meaning
 - Do not average or merge unrelated medical facts
@@ -1767,7 +1903,18 @@ def main() -> None:
             results = search(args.query)
             context = build_context(results)
 
-        prompt = build_prompt(args.query, context)
+        # Intent classification and prompt builder selection
+        intent = classify_intent(args.query)
+        TRACE_LOGGER.info("[INTENT RESULT] %s", intent)
+
+        prompt_builder = (
+            build_earliest_prompt
+            if intent is RetrievalIntent.EARLIEST_MENTION
+            else build_prompt
+        )
+        TRACE_LOGGER.info("[PROMPT BUILDER] %s", prompt_builder.__name__)
+
+        prompt = prompt_builder(args.query, context)
 
         logger.info("===== CONTEXT =====")
         logger.info("\n%s", context)
